@@ -21,7 +21,7 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ///////////////////////////////////////////////////////////////////////////////////
 
-"use strict";
+import { GL, WEBGL_INFO } from "./constants.js";
 
 /**
     WebGL shader.
@@ -30,22 +30,43 @@
     @prop {WebGLRenderingContext} gl The WebGL context.
     @prop {WebGLShader} shader The shader.
 */
-class Shader {
-    
-    constructor(gl, type, source) {
+export class Shader {
+
+    constructor(gl, appState, type, source) {
         this.gl = gl;
-        this.shader = gl.createShader(type);
-        gl.shaderSource(this.shader, source);
-        gl.compileShader(this.shader);
+        this.appState = appState;
+        this.shader = null;
+        this.type = type;
+        this.source = source;
 
-        if (!gl.getShaderParameter(this.shader, gl.COMPILE_STATUS)) {
-            let i, lines;
+        this.restore();
+    }
 
-            console.error(gl.getShaderInfoLog(this.shader));
-            lines = source.split("\n");
-            for (i = 0; i < lines.length; ++i) {
-                console.error(`${i + 1}: ${lines[i]}`);
-            }
+    /**
+        Restore shader after context loss.
+
+        @method
+        @return {Shader} The Shader object.
+    */
+    restore() {
+        this.shader = this.gl.createShader(this.type);
+        this.gl.shaderSource(this.shader, this.source);
+        this.gl.compileShader(this.shader);
+
+        return this;
+    }
+
+    /**
+        Get the shader source translated for the platform's API.
+
+        @method
+        @return {String} The translated shader source.
+    */
+    translatedSource() {
+        if (WEBGL_INFO.DEBUG_SHADERS) {
+            return this.appState.extensions.debugShaders.getTranslatedShaderSource(this.shader);
+        } else {
+            return "(Unavailable)";
         }
     }
 
@@ -64,6 +85,18 @@ class Shader {
         return this;
     }
 
-}
 
-module.exports = Shader;
+    checkCompilation() {
+        if (!this.gl.getShaderParameter(this.shader, GL.COMPILE_STATUS)) {
+            let i, lines;
+
+            console.error(this.gl.getShaderInfoLog(this.shader));
+            lines = this.source.split("\n");
+            for (i = 0; i < lines.length; ++i) {
+                console.error(`${i + 1}: ${lines[i]}`);
+            }
+        }
+
+        return this;
+    }
+}

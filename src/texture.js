@@ -21,12 +21,16 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ///////////////////////////////////////////////////////////////////////////////////
 
-"use strict";
-
-const CONSTANTS = require("./constants");
-const TEXTURE_FORMAT_DEFAULTS = require("./texture-format-defaults");
-
-const DUMMY_ARRAY = new Array(1);
+import { 
+    GL,
+    WEBGL_INFO,
+    TEXTURE_FORMATS,
+    COMPRESSED_TEXTURE_TYPES,
+    DUMMY_OBJECT,
+    DUMMY_UNIT_ARRAY,
+    // DEPRECATED
+    TEXTURE_FORMAT_DEFAULTS
+} from "./constants.js";
 
 /**
     General-purpose texture.
@@ -34,44 +38,62 @@ const DUMMY_ARRAY = new Array(1);
     @class
     @prop {WebGLRenderingContext} gl The WebGL context.
     @prop {WebGLTexture} texture Handle to the texture.
-    @prop {WebGLSamler} sampler Sampler object.
+    @prop {number} width Texture width.
+    @prop {number} height Texture height.
+    @prop {number} depth Texture depth.
     @prop {GLEnum} binding Binding point for the texture.
     @prop {GLEnum} type Type of data stored in the texture.
     @prop {GLEnum} format Layout of texture data.
     @prop {GLEnum} internalFormat Internal arrangement of the texture data.
     @prop {number} currentUnit The current texture unit this texture is bound to.
     @prop {boolean} is3D Whether this texture contains 3D data.
-    @prop {boolean} flipY Whether the y-axis is being flipped for this texture.
+    @prop {boolean} flipY Whether the y-axis is flipped for this texture.
+    @prop {boolean} premultiplyAlpha Whether alpha should be pre-multiplied when loading this texture.
     @prop {boolean} mipmaps Whether this texture is using mipmap filtering 
         (and thus should have a complete mipmap chain).
     @prop {Object} appState Tracked GL state.
 */
-class Texture {
-    constructor(gl, appState, binding, image, width = image.width, height = image.height, depth, is3D, options = CONSTANTS.DUMMY_OBJECT) {
-        let defaultType = options.format === CONSTANTS.DEPTH_COMPONENT ? CONSTANTS.UNSIGNED_SHORT : CONSTANTS.UNSIGNED_BYTE;
+export class Texture {
+    constructor(gl, appState, binding, image, width = image.width, height = image.height, depth, is3D, options = DUMMY_OBJECT) {
 
         this.gl = gl;
         this.binding = binding;
         this.texture = null;
-        this.width = -1;
-        this.height = -1;
-        this.depth = -1;
-        this.type = options.type !== undefined ? options.type : defaultType;
+        this.width = width || 0;
+        this.height = height || 0;
+        this.depth = depth || 0;
         this.is3D = is3D;
         this.appState = appState;
 
-        this.format = null;
-        this.internalFormat = null;
-        this.compressed = !!(TEXTURE_FORMAT_DEFAULTS.COMPRESSED_TYPES[options.format] || TEXTURE_FORMAT_DEFAULTS.COMPRESSED_TYPES[options.internalFormat]);
+        this.compressed = Boolean(COMPRESSED_TEXTURE_TYPES[options.internalFormat]);
         
+        if (options.format !== undefined) {
+            console.warn("Texture option 'format' is deprecated and will be removed. Use 'internalFormat' with a sized format instead.");
+            this.compressed = Boolean(COMPRESSED_TEXTURE_TYPES[options.format]);
+            if (options.type === undefined) {
+                options.type = options.format === GL.DEPTH_COMPONENT ? GL.UNSIGNED_SHORT : GL.UNSIGNED_BYTE;
+            }
+            if (options.internalFormat === undefined) {
+                if (this.compressed) {
+                    options.internalFormat = options.format;
+                } else {
+                    options.internalFormat = TEXTURE_FORMAT_DEFAULTS[options.type][options.format];
+                }
+            }
+        }
+
         if (this.compressed) {
             // For compressed textures, just need to provide one of format, internalFormat.
             // The other will be the same.
-            this.format = options.format !== undefined ? options.format : options.internalFormat;
-            this.internalFormat = options.internalFormat !== undefined ? options.internalFormat : options.format;
+            this.internalFormat = options.internalFormat;
+            this.format = this.internalFormat;
+            this.type = GL.UNSIGNED_BYTE;
         } else {
-            this.format = options.format !== undefined ? options.format : gl.RGBA;
-            this.internalFormat = options.internalFormat !== undefined ? options.internalFormat : TEXTURE_FORMAT_DEFAULTS[this.type][this.format];
+            this.internalFormat = options.internalFormat !== undefined ? options.internalFormat : GL.RGBA8;
+
+            let formatInfo = TEXTURE_FORMATS[this.internalFormat];
+            this.format = formatInfo[0];
+            this.type = options.type !== undefined ? options.type : formatInfo[1];
         }
 
         // -1 indicates unbound
@@ -79,18 +101,20 @@ class Texture {
 
         // Sampling parameters
         let {
-            minFilter = image ? gl.LINEAR_MIPMAP_NEAREST : gl.NEAREST,
-            magFilter = image ? gl.LINEAR : gl.NEAREST,
-            wrapS = gl.REPEAT,
-            wrapT = gl.REPEAT,
-            wrapR = gl.REPEAT,
-            compareMode = gl.NONE,
-            compareFunc = gl.LEQUAL,
+            minFilter = image ? GL.LINEAR_MIPMAP_NEAREST : GL.NEAREST,
+            magFilter = image ? GL.LINEAR : GL.NEAREST,
+            wrapS = GL.REPEAT,
+            wrapT = GL.REPEAT,
+            wrapR = GL.REPEAT,
+            compareMode = GL.NONE,
+            compareFunc = GL.LEQUAL,
             minLOD = null,
             maxLOD = null,
             baseLevel = null,
             maxLevel = null,
-            flipY = false
+            maxAnisotropy = 1,
+            flipY = false,
+            premultiplyAlpha = false
         } = options;
 
         this.minFilter = minFilter;
@@ -104,14 +128,32 @@ class Texture {
         this.maxLOD = maxLOD;
         this.baseLevel = baseLevel;
         this.maxLevel = maxLevel;
+        this.maxAnisotropy = Math.min(maxAnisotropy, WEBGL_INFO.MAX_TEXTURE_ANISOTROPY);
         this.flipY = flipY;
-        this.mipmaps = (minFilter === gl.LINEAR_MIPMAP_NEAREST || minFilter === gl.LINEAR_MIPMAP_LINEAR);
+        this.premultiplyAlpha = premultiplyAlpha;
+        this.mipmaps = (minFilter === GL.LINEAR_MIPMAP_NEAREST || minFilter === GL.LINEAR_MIPMAP_LINEAR);
 
-        this.resize(width, height, depth);
+        this.restore(image);
+    }
+
+    /**
+        Restore texture after context loss.
+
+        @method
+        @param {DOMElement|ArrayBufferView|Array} [image] Image data. An array can be passed to manually set all levels 
+            of the mipmap chain. If a single level is passed and mipmap filtering is being used,
+            generateMipmap() will be called to produce the remaining levels.
+        @return {Texture} The Texture object.
+    */
+    restore(image) {
+        this.texture = null;
+        this.resize(this.width, this.height, this.depth);
 
         if (image) {
             this.data(image);
         }
+
+        return this;
     }
 
     /**
@@ -126,7 +168,7 @@ class Texture {
     resize(width, height, depth) {
         depth = depth || 0;
 
-        if (width === this.width && height === this.height && depth === this.depth) {
+        if (this.texture && width === this.width && height === this.height && depth === this.depth) {
             return this; 
         }
 
@@ -142,26 +184,34 @@ class Texture {
         this.height = height;
         this.depth = depth;
 
-        this.gl.texParameteri(this.binding, this.gl.TEXTURE_MIN_FILTER, this.minFilter);
-        this.gl.texParameteri(this.binding, this.gl.TEXTURE_MAG_FILTER, this.magFilter);
-        this.gl.texParameteri(this.binding, this.gl.TEXTURE_WRAP_S, this.wrapS);
-        this.gl.texParameteri(this.binding, this.gl.TEXTURE_WRAP_T, this.wrapT);
-        this.gl.texParameteri(this.binding, this.gl.TEXTURE_WRAP_R, this.wrapR);
-        this.gl.texParameteri(this.binding, this.gl.TEXTURE_COMPARE_FUNC, this.compareFunc);
-        this.gl.texParameteri(this.binding, this.gl.TEXTURE_COMPARE_MODE, this.compareMode);
-        this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, this.flipY);
+        this.gl.texParameteri(this.binding, GL.TEXTURE_MIN_FILTER, this.minFilter);
+        this.gl.texParameteri(this.binding, GL.TEXTURE_MAG_FILTER, this.magFilter);
+        this.gl.texParameteri(this.binding, GL.TEXTURE_WRAP_S, this.wrapS);
+        this.gl.texParameteri(this.binding, GL.TEXTURE_WRAP_T, this.wrapT);
+        this.gl.texParameteri(this.binding, GL.TEXTURE_WRAP_R, this.wrapR);
+        this.gl.texParameteri(this.binding, GL.TEXTURE_COMPARE_FUNC, this.compareFunc);
+        this.gl.texParameteri(this.binding, GL.TEXTURE_COMPARE_MODE, this.compareMode);
+        this.gl.pixelStorei(GL.UNPACK_FLIP_Y_WEBGL, this.flipY);
+        this.gl.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, this.premultiplyAlpha);
+        
         if (this.minLOD !== null) {
-            this.gl.texParameterf(this.binding, this.gl.TEXTURE_MIN_LOD, this.minLOD);
+            this.gl.texParameterf(this.binding, GL.TEXTURE_MIN_LOD, this.minLOD);
         }
+        
         if (this.maxLOD !== null) {
-            this.gl.texParameterf(this.binding, this.gl.TEXTURE_MAX_LOD, this.maxLOD);
+            this.gl.texParameterf(this.binding, GL.TEXTURE_MAX_LOD, this.maxLOD);
         }
+        
         if (this.baseLevel !== null) {
-            this.gl.texParameteri(this.binding, this.gl.TEXTURE_BASE_LEVEL, this.baseLevel);
+            this.gl.texParameteri(this.binding, GL.TEXTURE_BASE_LEVEL, this.baseLevel);
         }
-
+        
         if (this.maxLevel !== null) {
-            this.gl.texParameteri(this.binding, this.gl.TEXTURE_MAX_LEVEL, this.maxLevel);
+            this.gl.texParameteri(this.binding, GL.TEXTURE_MAX_LEVEL, this.maxLevel);
+        }
+        
+        if (this.maxAnisotropy > 1) {
+            this.gl.texParameteri(this.binding, GL.TEXTURE_MAX_ANISOTROPY_EXT, this.maxAnisotropy);
         }
 
         let levels;
@@ -197,8 +247,8 @@ class Texture {
     */
     data(data) {
         if (!Array.isArray(data)) {
-            DUMMY_ARRAY[0] = data;
-            data = DUMMY_ARRAY;
+            DUMMY_UNIT_ARRAY[0] = data;
+            data = DUMMY_UNIT_ARRAY;
         }
 
         let numLevels = this.mipmaps ? data.length : 1;
@@ -286,7 +336,7 @@ class Texture {
                 this.appState.textures[this.currentUnit] = null;
             }
 
-            this.gl.activeTexture(this.gl.TEXTURE0 + unit);
+            this.gl.activeTexture(GL.TEXTURE0 + unit);
             this.gl.bindTexture(this.binding, this.texture);
 
             this.appState.textures[unit] = this;
@@ -297,5 +347,3 @@ class Texture {
     }
 
 }
-
-module.exports = Texture;

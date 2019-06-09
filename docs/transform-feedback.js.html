@@ -49,7 +49,7 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ///////////////////////////////////////////////////////////////////////////////////
 
-"use strict";
+import { GL } from "./constants.js";
 
 /**
     Tranform feedback object.
@@ -59,16 +59,30 @@
     @prop {WebGLTransformFeedback} transformFeedback Transform feedback object.
     @prop {Object} appState Tracked GL state.
 */
-class TransformFeedback {
+export class TransformFeedback {
 
     constructor(gl, appState) {
         this.gl = gl;
-        this.transformFeedback = gl.createTransformFeedback();
         this.appState = appState;
+        this.transformFeedback = null;
 
-        // TODO(Tarek): Need to rebind buffers due to bug in ANGLE.
-        // Remove this when that's fixed.
-        this.angleBugBuffers = [];
+        this.restore();
+    }
+
+    /**
+        Restore transform feedback after context loss.
+
+        @method
+        @return {TransformFeedback} The TransformFeedback object.
+    */
+    restore() {
+        if (this.appState.transformFeedback === this) {
+            this.appState.transformFeedback = null;
+        }
+
+        this.transformFeedback = this.gl.createTransformFeedback();
+
+        return this;
     }
 
     /**
@@ -80,12 +94,14 @@ class TransformFeedback {
         @return {TransformFeedback} The TransformFeedback object.
     */
     feedbackBuffer(index, buffer) {
-        this.gl.bindTransformFeedback(this.gl.TRANSFORM_FEEDBACK, this.transformFeedback);
-        this.gl.bindBufferBase(this.gl.TRANSFORM_FEEDBACK_BUFFER, index, buffer.buffer);
-        this.gl.bindTransformFeedback(this.gl.TRANSFORM_FEEDBACK, null);
-        this.gl.bindBufferBase(this.gl.TRANSFORM_FEEDBACK_BUFFER, index, null);
+        this.gl.bindTransformFeedback(GL.TRANSFORM_FEEDBACK, this.transformFeedback);
+        this.gl.bindBufferBase(GL.TRANSFORM_FEEDBACK_BUFFER, index, buffer.buffer);
 
-        this.angleBugBuffers[index] = buffer;
+        // TODO(Tarek): Firefox doesn't properly unbind TRANSFORM_FEEDBACK_BUFFER
+        // bindings when TRANSFORM_FEEDBACK is unbound.
+        // https://bugzilla.mozilla.org/show_bug.cgi?id=1541396
+        this.gl.bindTransformFeedback(GL.TRANSFORM_FEEDBACK, null);
+        this.gl.bindBufferBase(GL.TRANSFORM_FEEDBACK_BUFFER, index, null);
 
         return this;
     }
@@ -100,6 +116,11 @@ class TransformFeedback {
         if (this.transformFeedback) {
             this.gl.deleteTransformFeedback(this.transformFeedback);
             this.transformFeedback = null;
+
+            if (this.appState.transformFeedback === this) {
+                this.gl.bindTransformFeedback(GL.TRANSFORM_FEEDBACK, null);
+                this.appState.transformFeedback = null;
+            }
         }
 
         return this;
@@ -114,12 +135,7 @@ class TransformFeedback {
     */
     bind() {
         if (this.appState.transformFeedback !== this) {
-            this.gl.bindTransformFeedback(this.gl.TRANSFORM_FEEDBACK, this.transformFeedback);
-
-            for (let i = 0, len = this.angleBugBuffers.length; i &lt; len; ++i) {
-                this.gl.bindBufferBase(this.gl.TRANSFORM_FEEDBACK_BUFFER, i, this.angleBugBuffers[i].buffer);
-            }
-
+            this.gl.bindTransformFeedback(GL.TRANSFORM_FEEDBACK, this.transformFeedback);
             this.appState.transformFeedback = this;
         }
 
@@ -127,8 +143,6 @@ class TransformFeedback {
     }
 
 }
-
-module.exports = TransformFeedback;
 </code></pre>
         </article>
     </section>
@@ -139,13 +153,13 @@ module.exports = TransformFeedback;
 </div>
 
 <nav>
-    <h2><a href="index.html">Home</a></h2><h3>Classes</h3><ul><li><a href="App.html">App</a></li><li><a href="Cubemap.html">Cubemap</a></li><li><a href="DrawCall.html">DrawCall</a></li><li><a href="Framebuffer.html">Framebuffer</a></li><li><a href="Program.html">Program</a></li><li><a href="Query.html">Query</a></li><li><a href="Shader.html">Shader</a></li><li><a href="Texture.html">Texture</a></li><li><a href="Timer.html">Timer</a></li><li><a href="TransformFeedback.html">TransformFeedback</a></li><li><a href="UniformBuffer.html">UniformBuffer</a></li><li><a href="VertexArray.html">VertexArray</a></li><li><a href="VertexBuffer.html">VertexBuffer</a></li></ul><h3>Namespaces</h3><ul><li><a href="PicoGL.html">PicoGL</a></li></ul>
+    <h2><a href="index.html">Home</a></h2><h3>Classes</h3><ul><li><a href="App.html">App</a></li><li><a href="Cubemap.html">Cubemap</a></li><li><a href="DrawCall.html">DrawCall</a></li><li><a href="Framebuffer.html">Framebuffer</a></li><li><a href="Program.html">Program</a></li><li><a href="Query.html">Query</a></li><li><a href="Renderbuffer.html">Renderbuffer</a></li><li><a href="Shader.html">Shader</a></li><li><a href="Texture.html">Texture</a></li><li><a href="Timer.html">Timer</a></li><li><a href="TransformFeedback.html">TransformFeedback</a></li><li><a href="UniformBuffer.html">UniformBuffer</a></li><li><a href="VertexArray.html">VertexArray</a></li><li><a href="VertexBuffer.html">VertexBuffer</a></li></ul><h3>Namespaces</h3><ul><li><a href="PicoGL.html">PicoGL</a></li></ul>
 </nav>
 
 <br class="clear">
 
 <footer>
-    Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.5.5</a> on Sat Mar 03 2018 12:33:30 GMT+0100 (CET)
+    Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.5.5</a> on Wed Apr 24 2019 08:40:11 GMT-0400 (EDT)
 </footer>
 
 <script> prettyPrint(); </script>
